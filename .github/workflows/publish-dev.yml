@@ -1,0 +1,38 @@
+name: Publish NYMERIA DEV preview
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout DEV
+        uses: actions/checkout@v4
+        with:
+          repository: Wasaboomer/nymeria-preview
+          ref: dev/kaelith-modular-character
+          persist-credentials: false
+      - name: Verify game entry
+        run: test -f index.html
+      - name: Prepare site
+        run: |
+          touch .nojekyll
+          printf 'DEV %s\n' "$(git rev-parse HEAD)" > dev-preview-version.txt
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
