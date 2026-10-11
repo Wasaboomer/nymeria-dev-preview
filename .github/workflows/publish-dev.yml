@@ -1,14 +1,17 @@
 name: Publish NYMERIA DEV preview
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '17 * * * *'
+    inputs:
+      source_sha:
+        description: "Tested DEV source commit SHA (optional for manual fallback)"
+        required: false
+        type: string
 permissions:
   contents: read
   pages: write
   id-token: write
 concurrency:
-  group: pages
+  group: nymeria-dev-pages
   cancel-in-progress: true
 jobs:
   deploy:
@@ -17,18 +20,60 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Checkout DEV
+      - name: Checkout current DEV HEAD
         uses: actions/checkout@v4
         with:
           repository: Wasaboomer/nymeria-preview
           ref: dev/kaelith-modular-character
           persist-credentials: false
+          fetch-depth: 1
+      - name: Verify SHA, opt-out and successful source tests
+        env:
+          REQUESTED_SHA: ${{ inputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          echo "Source DEV HEAD: $actual"
+          if [[ -n "$REQUESTED_SHA" && "$actual" != "$REQUESTED_SHA" ]]; then
+            echo "::notice::Skipping obsolete deployment request for $REQUESTED_SHA"
+            exit 0
+          fi
+          message="$(git log -1 --format=%B)"
+          if [[ "$message" == *'[skip dev deploy]'* ]]; then
+            echo "::error::DEV publication explicitly disabled by commit marker"
+            exit 1
+          fi
+          echo "DEV_SOURCE_SHA=$actual" >> "$GITHUB_ENV"
+          # Require a successful NYMERIA DEV Tests workflow run for the exact HEAD,
+          # including when manually triggered. A missing/failed check blocks deploy.
+          response="$(curl --fail-with-body --silent --show-error --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/Wasaboomer/nymeria-preview/actions/workflows/nymeria-dev-tests.yml/runs?head_sha=$actual&per_page=30")"
+          printf '%s' "$response" | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)
+          runs=d.get("workflow_runs", [])
+          ok=any(r.get("head_sha")==sys.argv[1] and r.get("conclusion")=="success" for r in runs)
+          if not ok:
+              print("No successful DEV test workflow for this SHA",file=sys.stderr)
+              sys.exit(1)
+          ' "$actual"
       - name: Verify game entry
         run: test -f index.html
       - name: Prepare site
         run: |
           touch .nojekyll
-          printf 'DEV %s\n' "$(git rev-parse HEAD)" > dev-preview-version.txt
+          printf 'DEV %s\n' "$DEV_SOURCE_SHA" > dev-preview-version.txt
+      - name: Recheck latest DEV SHA before deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest="$(git ls-remote https://github.com/Wasaboomer/nymeria-preview.git refs/heads/dev/kaelith-modular-character | cut -f1)"
+          test "$latest" = "$DEV_SOURCE_SHA" || { echo "::error::DEV HEAD changed; refusing obsolete deploy"; exit 1; }
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
